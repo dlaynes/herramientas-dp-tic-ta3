@@ -1,6 +1,6 @@
 services:
   emqx:
-    image: emqx/emqx:latest
+    image: emqx/emqx:6.3.1
     container_name: emqx_broker
     restart: always
     ports:
@@ -8,10 +8,17 @@ services:
       - "8883:8883"   # MQTT Seguro con TLS/SSL
       - "8083:8083"   # MQTT sobre WebSockets
       - "18083:18083" # Panel de administración EMQX
+    environment:
+      # Listener TLS (8883) con los certificados del laboratorio
+      EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__CERTFILE: /opt/emqx/etc/certs/lab/server.crt
+      EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__KEYFILE: /opt/emqx/etc/certs/lab/server.key
+      EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__CACERTFILE: /opt/emqx/etc/certs/lab/ca.crt
     volumes:
-      - ../certs:/opt/emqx/etc/certs:ro
-
-
+      # Se monta en una subcarpeta para no reemplazar los certificados por defecto de EMQX
+      # "z" permite el acceso con SELinux (Fedora/RHEL); se ignora en Windows y macOS
+      - ./certs:/opt/emqx/etc/certs/lab:ro,z
+      # Persiste usuarios, contraseña de admin y configuración del panel
+      - emqx_data:/opt/emqx/data
 
   influxdb:
     image: influxdb:2.7
@@ -25,21 +32,42 @@ services:
       DOCKER_INFLUXDB_INIT_PASSWORD: Cambiar_Clave_Influx_2026
       DOCKER_INFLUXDB_INIT_ORG: iot
       DOCKER_INFLUXDB_INIT_BUCKET: sensores
-      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: CAMBIAR_TOKEN_LARGO_DE_LABORATORIO
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: ${INFLUX_TOKEN:-CAMBIAR_TOKEN_LARGO_DE_LABORATORIO}
     volumes:
       - influxdb_data:/var/lib/influxdb2
 
+  # Puente MQTT -> InfluxDB: se suscribe a iot/+/mediciones y guarda cada lectura
+  telegraf:
+    image: telegraf:1.34
+    container_name: iot_telegraf
+    restart: unless-stopped
+    depends_on:
+      - emqx
+      - influxdb
+    environment:
+      TELEGRAF_MQTT_USERNAME: ${TELEGRAF_MQTT_USERNAME:-telegraf}
+      TELEGRAF_MQTT_PASSWORD: ${TELEGRAF_MQTT_PASSWORD:-}
+      INFLUX_TOKEN: ${INFLUX_TOKEN:-CAMBIAR_TOKEN_LARGO_DE_LABORATORIO}
+    volumes:
+      - ./telegraf/telegraf.conf:/etc/telegraf/telegraf.conf:ro,z
+
   grafana:
-    image: grafana/grafana-oss:latest
+    image: grafana/grafana-oss:13.0.2
     container_name: iot_grafana
     restart: unless-stopped
     ports:
       - "3000:3000"
     depends_on:
       - influxdb
+    environment:
+      INFLUX_TOKEN: ${INFLUX_TOKEN:-CAMBIAR_TOKEN_LARGO_DE_LABORATORIO}
     volumes:
       - grafana_data:/var/lib/grafana
+      # Fuente de datos InfluxDB y dashboard cargados automáticamente al iniciar
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro,z
+      - ./grafana/dashboards:/etc/grafana/dashboards:ro,z
 
 volumes:
+  emqx_data:
   influxdb_data:
   grafana_data:
